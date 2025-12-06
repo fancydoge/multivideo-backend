@@ -1,39 +1,85 @@
-// /api/check.js - 检查许可证状态接口
-const SUPABASE_URL = '你的Supabase项目URL';
-const SUPABASE_SERVICE_KEY = '你的Supabase service_role密钥';
+// api/check.js
+import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
-  if (req.method !== 'GET') return res.status(405).json({ error: 'Method not allowed' });
-
-  const user_id = req.query.user_id;
-  if (!user_id) return res.status(400).json({ error: 'Missing user_id' });
-
+  // CORS 设置
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+  
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  
   try {
-    // 查询该用户最近激活的有效许可证
-    const queryUrl = `${SUPABASE_URL}/rest/v1/user_licenses?user_id=eq.${user_id}&is_active=eq.true&order=created_at.desc&limit=1`;
-    const response = await fetch(queryUrl, {
-      headers: {
-        'apikey': SUPABASE_SERVICE_KEY,
-        'Authorization': `Bearer ${SUPABASE_SERVICE_KEY}`,
-        'Accept': 'application/json'
-      }
-    });
-
-    if (!response.ok) throw new Error('Database query failed');
-
-    const licenses = await response.json();
-
-    if (licenses && licenses.length > 0) {
-      const license = licenses[0];
-      res.status(200).json({
-        valid: true,
-        max_screens: license.product_type === '6screen' ? 6 : 4
+    const { user_id } = req.query;
+    
+    if (!user_id) {
+      return res.status(400).json({ 
+        valid: false, 
+        error: '缺少用户ID' 
       });
-    } else {
-      res.status(200).json({ valid: false });
     }
+    
+    // 获取环境变量
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    
+    if (!supabaseUrl || !supabaseKey) {
+      return res.status(500).json({ 
+        valid: false, 
+        error: '服务器配置错误' 
+      });
+    }
+    
+    const supabase = createClient(supabaseUrl, supabaseKey);
+    
+    // 查询用户的所有许可证
+    const { data: licenses, error } = await supabase
+      .from('licenses')
+      .select('*')
+      .eq('user_id', user_id);
+    
+    if (error) {
+      console.error('查询用户许可证错误:', error);
+      return res.status(500).json({ 
+        valid: false, 
+        error: '查询失败' 
+      });
+    }
+    
+    if (!licenses || licenses.length === 0) {
+      return res.status(200).json({ 
+        valid: false, 
+        max_screens: 2 
+      });
+    }
+    
+    // 找出最大的屏幕数
+    let max_screens = 2;
+    for (const license of licenses) {
+      if (license.type === '6screen') {
+        max_screens = 6;
+        break;
+      } else if (license.type === '4screen') {
+        max_screens = Math.max(max_screens, 4);
+      }
+    }
+    
+    res.status(200).json({ 
+      valid: true, 
+      max_screens 
+    });
+    
   } catch (error) {
-    console.error('验证过程出错:', error);
-    res.status(500).json({ error: '服务器内部错误', valid: false });
+    console.error('检查许可证错误:', error);
+    res.status(500).json({ 
+      valid: false, 
+      error: '服务器错误' 
+    });
   }
 }
