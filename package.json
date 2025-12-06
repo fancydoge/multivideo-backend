@@ -1,0 +1,15 @@
+{
+  "name": "multivideo-backend",
+  "version": "1.0.0",
+  "description": "License verification backend for MultiVideo Split Player",
+  "main": "api/activate.js",
+  "scripts": {
+    "start": "node api/activate.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.39.0"
+  },
+  "engines": {
+    "node": ">=18.x"
+  }
+}
