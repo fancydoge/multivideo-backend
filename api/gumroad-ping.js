@@ -1,206 +1,207 @@
-// api/gumroad-ping.js - 简化修复版
+// api/gumroad-ping.js - 兼容你的表结构版本
 import { createClient } from '@supabase/supabase-js';
 
 export default async function handler(req, res) {
-  console.log('📩 收到Gumroad Ping请求，方法:', req.method);
+  console.log('📩 Gumroad Ping 请求开始处理');
+  
+  // 设置 CORS 头部
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
   
   // 处理预检请求
   if (req.method === 'OPTIONS') {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
     return res.status(200).end();
   }
   
-  // 设置CORS头
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  // 允许测试用的 GET 请求
+  if (req.method === 'GET') {
+    return res.status(200).json({
+      message: 'Gumroad Ping API 正常运行',
+      status: 'active',
+      timestamp: new Date().toISOString(),
+      note: '请使用 POST 方法发送实际的 Ping 数据'
+    });
+  }
   
-  // 只处理POST请求
+  // 只处理 POST 请求
   if (req.method !== 'POST') {
-    console.log('⚠️  收到非POST请求，返回405');
-    return res.status(405).json({ 
-      success: false, 
-      error: '只支持POST方法' 
+    return res.status(405).json({
+      success: false,
+      error: '只支持 POST 方法'
     });
   }
   
   try {
-    // ========== 1. 解析请求体 ==========
+    // 1. 读取请求体
     let body = '';
-    
-    // 确保是x-www-form-urlencoded格式
-    const contentType = req.headers['content-type'] || '';
-    if (!contentType.includes('application/x-www-form-urlencoded')) {
-      console.log('⚠️  内容类型不正确:', contentType);
-    }
-    
-    // 读取请求体
-    const chunks = [];
     for await (const chunk of req) {
-      chunks.push(chunk);
+      body += chunk.toString();
     }
-    body = Buffer.concat(chunks).toString();
     
-    console.log('📋 收到Ping数据，长度:', body.length, '字符');
+    console.log('📦 原始请求体长度:', body.length);
     
-    // 解析URL编码的数据
+    // 2. 解析 x-www-form-urlencoded 数据
     const params = new URLSearchParams(body);
-    const pingData = {};
+    const data = {};
     
     for (const [key, value] of params.entries()) {
-      pingData[key] = value;
+      data[key] = value;
     }
     
-    console.log('🔍 解析到字段:', Object.keys(pingData));
-    
-    // ========== 2. 提取关键信息 ==========
-    const license_key = pingData.license_key;
-    const email = pingData.email;
-    const product_permalink = pingData.product_permalink;
-    const sale_id = pingData.sale_id || pingData.order_id;
-    
-    console.log('🎯 提取的关键信息:', {
-      has_license_key: !!license_key,
-      license_key_prefix: license_key ? `${license_key.substring(0, 8)}...` : '无',
-      email: email ? `${email.substring(0, 3)}...` : '无',
-      product: product_permalink || '未知',
-      sale_id: sale_id || '无'
+    console.log('📋 收到的字段:', Object.keys(data));
+    console.log('🔍 关键字段值:', {
+      hasLicenseKey: !!data.license_key,
+      licenseKey: data.license_key ? `${data.license_key.substring(0, 8)}...` : '无',
+      email: data.email ? `${data.email.substring(0, 3)}...` : '无',
+      product: data.product_permalink || '未知',
+      saleId: data.sale_id || data.order_id || '无'
     });
     
-    // ========== 3. 验证必需字段 ==========
-    if (!license_key) {
-      console.error('❌ 错误：Ping中缺少license_key字段');
-      console.log('📊 收到的所有字段:', pingData);
+    // 3. 验证必需字段
+    if (!data.license_key) {
+      console.error('❌ 错误: 缺少 license_key');
+      console.log('📊 收到的所有数据:', data);
       
-      // 返回200但标记失败（Gumroad要求返回200）
       return res.status(200).json({
         success: false,
-        error: '缺少许可证密钥',
-        received_fields: Object.keys(pingData),
-        note: 'Gumroad Ping必须包含license_key参数'
+        error: 'Ping 请求中缺少许可证密钥',
+        received_fields: Object.keys(data),
+        timestamp: new Date().toISOString()
       });
     }
     
-    if (!sale_id) {
-      console.warn('⚠️  警告：缺少sale_id，使用时间戳作为标识');
-    }
+    // 4. 确定许可证类型
+    let licenseType = '4screen'; // 默认值
     
-    // ========== 4. 确定许可证类型 ==========
-    let licenseType = '4screen';
-    
-    if (product_permalink) {
-      if (product_permalink.includes('6_') || product_permalink.includes('6screen')) {
+    if (data.product_permalink) {
+      if (data.product_permalink.includes('6_') || 
+          data.product_permalink.includes('6screen') ||
+          data.product_permalink.includes('6-multihotplayer')) {
+        licenseType = '6screen';
+      }
+    } else if (data.product_name) {
+      if (data.product_name.includes('6 Screen') || 
+          data.product_name.includes('6屏')) {
         licenseType = '6screen';
       }
     }
     
-    // 如果没有产品信息，尝试根据其他信息判断
-    if (!product_permalink && pingData.price) {
-      const price = parseFloat(pingData.price);
-      if (price >= 1.5) {
-        licenseType = '6screen';
-      }
-    }
+    console.log('🏷️  确定的许可证类型:', licenseType);
     
-    console.log('🏷️  确定许可证类型:', licenseType);
-    
-    // ========== 5. 连接Supabase ==========
+    // 5. 连接 Supabase
     const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     
     if (!supabaseUrl || !supabaseKey) {
-      console.error('❌ 缺少Supabase环境变量');
-      return res.status(200).json({  // 返回200避免Gumroad重试
+      console.error('❌ 缺少 Supabase 环境变量');
+      return res.status(200).json({
         success: false,
-        error: '服务器配置错误'
+        error: '服务器配置错误',
+        note: '请检查环境变量配置'
       });
     }
     
     const supabase = createClient(supabaseUrl, supabaseKey);
     
-    // ========== 6. 准备数据（只使用表中已有的字段）==========
+    // 6. 准备要保存的数据
+    const now = new Date().toISOString();
     const licenseData = {
-      key: license_key.trim(),
+      key: data.license_key.trim(),
       type: licenseType,
-      gumroad_order_id: sale_id || `PING-${Date.now()}`,
-      purchase_email: email || '',
-      created_at: pingData.created_at ? new Date(pingData.created_at).toISOString() : new Date().toISOString()
+      gumroad_order_id: data.sale_id || data.order_id || `PING-${Date.now()}`,
+      purchase_email: data.email || '',
+      gumroad_product: data.product_permalink || data.product_name || (licenseType === '6screen' ? '6_multihotplayer' : '4_multihotplayer'),
+      updated_at: now
     };
     
-    // 可选：添加其他字段（如果表中存在）
-    if (pingData.price) {
-      licenseData.price_cents = Math.round(parseFloat(pingData.price) * 100);
-    }
-    
-    if (pingData.product_name) {
-      licenseData.gumroad_product = pingData.product_name;
-    } else if (product_permalink) {
-      licenseData.gumroad_product = product_permalink;
-    }
-    
-    console.log('💾 准备保存的数据:', {
-      ...licenseData,
-      key: `${licenseData.key.substring(0, 8)}...` // 日志中隐藏完整密钥
-    });
-    
-    // ========== 7. 插入数据库 ==========
-    console.log('正在插入数据库...');
-    
-    // 先尝试upsert（更新或插入）
-    const { error } = await supabase
-      .from('licenses')
-      .upsert(licenseData, {
-        onConflict: 'key'
-      });
-    
-    if (error) {
-      console.error('❌ upsert失败，尝试insert:', error.message);
-      
-      // 尝试简单的insert
-      const { error: insertError } = await supabase
-        .from('licenses')
-        .insert([licenseData]);
-      
-      if (insertError) {
-        console.error('❌ insert也失败:', insertError.message);
-        
-        // 检查表结构
-        const { error: checkError } = await supabase
-          .from('licenses')
-          .select('key')
-          .limit(1);
-        
-        if (checkError) {
-          console.error('❌ 表连接测试失败:', checkError.message);
-          throw new Error(`数据库错误: ${checkError.message}`);
-        }
-        
-        throw new Error(`插入失败: ${insertError.message}`);
+    // 添加价格信息（如果有）
+    if (data.price) {
+      const price = parseFloat(data.price);
+      if (!isNaN(price)) {
+        licenseData.price_cents = Math.round(price * 100);
       }
     }
     
-    console.log('✅ 许可证已保存到数据库');
+    // 添加货币信息（如果有）
+    if (data.currency && (data.currency === 'USD' || data.currency === 'EUR' || data.currency === 'CNY')) {
+      licenseData.currency = data.currency;
+    }
     
-    // ========== 8. 返回成功响应 ==========
-    res.status(200).json({
-      success: true,
-      message: '许可证已成功同步',
-      license_key: `${license_key.substring(0, 4)}...${license_key.substring(-4)}`, // 部分隐藏
-      license_type: licenseType,
-      timestamp: new Date().toISOString()
+    // 添加购买者ID（如果有）
+    if (data.purchaser_id) {
+      licenseData.purchaser_id = data.purchaser_id;
+    }
+    
+    console.log('💾 准备保存的数据（脱敏）:', {
+      key: `${licenseData.key.substring(0, 8)}...`,
+      type: licenseData.type,
+      gumroad_order_id: licenseData.gumroad_order_id,
+      purchase_email: licenseData.purchase_email ? `${licenseData.purchase_email.substring(0, 3)}...` : '空',
+      gumroad_product: licenseData.gumroad_product
     });
     
-    console.log('🎉 Ping处理完成！');
+    // 7. 插入/更新数据库
+    console.log('正在保存到数据库...');
+    
+    // 先检查是否已存在
+    const { data: existingLicense } = await supabase
+      .from('licenses')
+      .select('id, key')
+      .eq('key', licenseData.key)
+      .maybeSingle();
+    
+    let operation;
+    
+    if (existingLicense) {
+      // 更新现有记录
+      const { error: updateError } = await supabase
+        .from('licenses')
+        .update(licenseData)
+        .eq('key', licenseData.key);
+      
+      if (updateError) {
+        throw new Error(`更新失败: ${updateError.message}`);
+      }
+      operation = 'updated';
+    } else {
+      // 插入新记录
+      const { error: insertError } = await supabase
+        .from('licenses')
+        .insert([{
+          ...licenseData,
+          created_at: now
+        }]);
+      
+      if (insertError) {
+        throw new Error(`插入失败: ${insertError.message}`);
+      }
+      operation = 'created';
+    }
+    
+    console.log(`✅ 许可证记录已${operation}`);
+    
+    // 8. 返回成功响应
+    const response = {
+      success: true,
+      message: `许可证已成功${operation === 'created' ? '创建' : '更新'}`,
+      license_key: `${licenseData.key.substring(0, 4)}****${licenseData.key.substring(licenseData.key.length - 4)}`,
+      license_type: licenseType,
+      operation: operation,
+      timestamp: now
+    };
+    
+    console.log('🎉 Ping 处理完成，返回响应:', response);
+    
+    res.status(200).json(response);
     
   } catch (error) {
-    console.error('❌ 处理Ping时出错:', error.message);
+    console.error('❌ 处理 Ping 时发生错误:', error);
     
-    // 重要：返回200状态码，避免Gumroad重试
+    // 返回 200 避免 Gumroad 重试
     res.status(200).json({
       success: false,
-      error: '处理完成但有错误',
+      error: '处理过程中发生错误',
       detail: error.message,
       timestamp: new Date().toISOString()
     });
