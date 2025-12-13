@@ -2,6 +2,7 @@
   "name": "multivideo-backend",
   "version": "1.0.0",
   "description": "License verification backend for MultiVideo Split Player",
+  "type": "module",
   "main": "api/activate.js",
   "scripts": {
     "start": "node api/activate.js"
